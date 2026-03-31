@@ -49,7 +49,7 @@ def edit_model(
     else:
         raise ValueError("Invalid --params")
 
-    # ---- SPEED null cluster ----
+    # ---- null cluster ----
     null_inputs = get_token_id("", pipeline.tokenizer, return_ids_only=False)
     null_hidden = pipeline.text_encoder(null_inputs.input_ids.to(device)).last_hidden_state[0]
     _, centers = kmeans(X=null_hidden[1:], num_clusters=3, device=device)
@@ -228,7 +228,7 @@ if __name__ == "__main__":
     torch.save(edit_dict, save_file)
     print(f"[DONE] Saved {save_file}")
 
-    log_dir = "logs/SPEED/alphaedit"
+    log_dir = "logs/alphaedit"
     match = re.search(r"step_(\d+)", args.save_path)
     step = int(match.group(1))
 

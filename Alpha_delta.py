@@ -30,6 +30,7 @@ def edit_model(
     base_state,
     all_target,
     target_concepts,
+    hist_targets,
     anchor_concepts,
     retain_texts,
     m_hist,
@@ -50,7 +51,7 @@ def edit_model(
     else:
         raise ValueError("Invalid --params")
 
-    # ---- SPEED null cluster ----
+    # ---- null cluster ----
     null_inputs = get_token_id("", pipeline.tokenizer, return_ids_only=False)
     null_hidden = pipeline.text_encoder(null_inputs.input_ids.to(device)).last_hidden_state[0]
     _, centers = kmeans(X=null_hidden[1:], num_clusters=3, device=device)
@@ -58,7 +59,7 @@ def edit_model(
     I2 = torch.eye(K2.shape[1], device=device)
 
     ## Target / Anchor
-    sum_tt, sum_at, ke, target_embs, anchor_embs= [], [], [], [], []
+    sum_tt, sum_at, ke = [], [], []
 
     for t, a in zip(target_concepts, anchor_concepts):
         t_in = get_token_id(t, pipeline.tokenizer, return_ids_only=False)
@@ -78,7 +79,25 @@ def edit_model(
         ke.append(t_vec)
     sum_tt = torch.stack(sum_tt).mean(0)
     sum_at = torch.stack(sum_at).mean(0)
-    k_e = torch.stack(ke).mean(0).T
+    k_e = torch.cat([x.T for x in ke], dim=1)   # [d, n_target]
+
+    ## hist_kp计算
+    hist_ke = []
+
+    for h in hist_targets:
+        h_in = get_token_id(h, pipeline.tokenizer, return_ids_only=False)
+        h_emb = pipeline.text_encoder(h_in.input_ids.to(device)).last_hidden_state[0]
+        idx_h = h_in.attention_mask[0].sum().item() - 2
+        h_vec = h_emb[[idx_h]]      # [1, d]
+        hist_ke.append(h_vec)
+
+    if len(hist_ke) > 0:
+        K_hist = torch.cat([x.T for x in hist_ke], dim=1)   # [d, n_hist]
+        sum_hh = (K_hist @ K_hist.T) / K_hist.shape[1]
+    else:
+        K_hist = None
+        sum_hh = torch.zeros_like(I)
+    ## end hist_kp计算
 
     ## Retain
     retain_texts = [x for x in retain_texts if not any(c.lower() in x.lower() for c in all_target)]
@@ -92,17 +111,16 @@ def edit_model(
 
     last_ret_embs = torch.cat(last_ret_embs, dim=0)
     last_ret_embs = last_ret_embs[torch.randperm(last_ret_embs.size(0))] ## shuffle
+    ## end Retain
 
-    ## deltaedit加入的新参数以及指标
+    ## 记录指标
     delta_coef = args.delta_coef
     eta = args.eta
-
     match = re.search(r"step_(\d+)", args.save_path)
     step = int(match.group(1))
 
     global_hist_norm_sq = 0.0
     global_cur_norm_sq  = 0.0
-    global_hist_noise = 0.0
 
     ## Edit each layer
     for name, W in tqdm(edit_dict.items(), desc="Editing"):
@@ -121,7 +139,7 @@ def edit_model(
         v_prev = float(v_hist[name])
 
         if torch.norm(delta_history) > 0:
-            x_t = torch.norm(delta_history @ k_e).pow(2).item()
+            x_t = torch.norm(delta_history @ k_e).pow(2) / k_e.shape[1]
 
             # 先用“旧统计量”计算阈值
             dynamic_threshold = m_prev + eta * (v_prev ** 0.5)
@@ -174,7 +192,7 @@ def edit_model(
             continue
 
         P = U[:, mask] @ U[:, mask].T
-        M = (sum_tt @ P + args.retain_scale * I).inverse()
+        M = (sum_tt @ P + args.hist_scale * sum_hh @ P + args.retain_scale * I).inverse()
 
         delta = (
             W @ (sum_at - sum_tt) @ P
@@ -186,14 +204,10 @@ def edit_model(
         delta_total = delta_history + delta
         global_hist_norm_sq += torch.norm(delta_total @ k_e) ** 2
         global_cur_norm_sq += torch.norm(delta @ k_e) ** 2
-        global_hist_noise += torch.norm(delta_history @ k_e) ** 2
+        edit_dict[name] = (W + delta).cpu()
 
-        edit_dict[name] = (W + delta).cpu() # delta_history = W - W_orig
-    remain_e = global_hist_norm_sq.item()
-    noise_e = abs((global_hist_norm_sq - global_cur_norm_sq).item())
-    history_noise = global_hist_noise
-
-    return edit_dict, m_hist, v_hist, noise_e, remain_e, history_noise, global_cur_norm_sq
+    noise_e = abs(global_hist_norm_sq - global_cur_norm_sq)
+    return edit_dict, m_hist, v_hist, noise_e
 
 
 # -------------------------------------------------
@@ -214,6 +228,7 @@ if __name__ == "__main__":
     parser.add_argument("--aug_num", type=int, default=10)
     parser.add_argument("--threshold", type=float, default=1e-4)
     parser.add_argument("--retain_scale", type=float, default=0.05)
+    parser.add_argument("--hist_scale", type=float, default=1.0)
     parser.add_argument("--lamb", type=float, default=0.0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dtype", type=str, default="float32")
@@ -236,7 +251,7 @@ if __name__ == "__main__":
     pipe.text_encoder.to(device)
     pipe.unet.to(device)
 
-    base_state = {k: v.clone() for k, v in pipe.unet.state_dict().items()} # 原始权重
+    basestate = {k: v.clone() for k, v in pipe.unet.state_dict().items()}
     m_hist = {}
     v_hist = {}
 
@@ -271,6 +286,8 @@ if __name__ == "__main__":
     # ---- Parse inputs ----
     all_targets = [x.strip() for x in args.target_concepts.split(",")]
     current_target = all_targets[-5:]
+    hist_targets = all_targets[:-len(current_target)]
+
     anchors = [x.strip() for x in args.anchor_concepts.split(",")]
     if len(anchors) == 1:
         anchors = anchors * len(current_target)
@@ -282,32 +299,26 @@ if __name__ == "__main__":
 
     torch.cuda.empty_cache()
     # ---- Edit ----
-    edit_dict, m_hist, v_hist, noise_e, remain_e, history_noise, cur_delta= edit_model(
-        args, pipe, base_state, all_targets, current_target, anchors, retain_texts, m_hist, v_hist, device=device
+    edit_dict, m_hist, v_hist, noise_e = edit_model(
+        args, pipe, basestate, all_targets, current_target, hist_targets, anchors, retain_texts, m_hist, v_hist, device=device
     )
 
     os.makedirs(args.save_path, exist_ok=True)
     # 保存权重
     weight_path = os.path.join(args.save_path, "weight.pt")
     torch.save(edit_dict, weight_path)
-
     # 保存统计量
     m_path = os.path.join(args.save_path, "m_hist.pt")
     v_path = os.path.join(args.save_path, "v_hist.pt")
-
     torch.save(m_hist, m_path)
     torch.save(v_hist, v_path)
 
-    # ---- noise_e log path ----
-    log_dir = "logs/SPEED/alpha_delta"
-    
-
+    # ---- noise_E log path ----
+    log_dir = "logs/alpha_delta"
     match = re.search(r"step_(\d+)", args.save_path)
     step = int(match.group(1))
-
     os.makedirs(log_dir, exist_ok=True)
     txt_path = os.path.join(log_dir, "noise_e_log.txt")
-    print(txt_path)
     with open(txt_path, "a") as f:
         f.write(f"step: {step}  noise_e: {noise_e:.8f}\n")
 
@@ -321,13 +332,4 @@ if __name__ == "__main__":
     noise_E_path = os.path.join(log_dir, "noise_E_log.txt")
     with open(noise_E_path, "a") as f:
         f.write(f"step: {step}  noise_E: {noise_E:.8f}\n")
-    print(f"[INFO] noise_E updated: {noise_E:.8f}")       
-
-
-
-
-
-
-
-
-
+    print(f"[INFO] noise_E updated: {noise_E:.8f}")

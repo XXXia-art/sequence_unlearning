@@ -22,7 +22,7 @@ def get_token_id(prompt, tokenizer, return_ids_only=True):
     )
     return tokens.input_ids if return_ids_only else tokens
 
-## AlphaEdit + IEC
+## AlphaEdit
 @torch.no_grad()
 def edit_model(
     args,
@@ -55,6 +55,7 @@ def edit_model(
     _, centers = kmeans(X=null_hidden[1:], num_clusters=3, device=device)
     K2 = torch.cat([null_hidden[[0]], centers.to(device)], dim=0).T
     I2 = torch.eye(K2.shape[1], device=device)
+
     ## Target / Anchor
     sum_tt, sum_at, ke = [], [], []
 
@@ -76,8 +77,8 @@ def edit_model(
         ke.append(t_vec)
     sum_tt = torch.stack(sum_tt).mean(0)
     sum_at = torch.stack(sum_at).mean(0)
-    k_e = torch.stack(ke).mean(0).T
-    
+    k_e = torch.cat([x.T for x in ke], dim=1)   # [d, n_target]
+
     ## hist_kp计算
     hist_ke = []
 
@@ -95,7 +96,6 @@ def edit_model(
         K_hist = None
         sum_hh = torch.zeros_like(I)
     ## end hist_kp计算
-        
 
     ## Retain
     retain_texts = [x for x in retain_texts if not any(c.lower() in x.lower() for c in all_target)]
@@ -114,15 +114,13 @@ def edit_model(
     ## 记录指标
     global_hist_norm_sq = 0.0
     global_cur_norm_sq  = 0.0
-    global_delta_hist = 0.0
 
     ## Edit each layer
     for name, W in tqdm(edit_dict.items(), desc="Editing"):
-        
+
         W = W.to(device)
         W_orig = base_state[name].to(device)
-        delta_history = W - W_orig
-
+        delta_history = W - W_orig  # 历史累计修改
 
         layer_ret_embs = last_ret_embs  # 使用所有保留样本，不做IPF筛选
         sum_rr, n = [], 0
@@ -148,7 +146,6 @@ def edit_model(
 
         delta_total = delta_history + delta
         global_hist_norm_sq += torch.norm(delta_total @ k_e) ** 2
-        global_delta_hist += torch.norm(delta_history @ k_e) ** 2
         global_cur_norm_sq += torch.norm(delta @ k_e) ** 2
         edit_dict[name] = (W + delta).cpu()
 
@@ -227,11 +224,10 @@ if __name__ == "__main__":
     save_file = os.path.join(args.save_path, "weight.pt")
     torch.save(edit_dict, save_file)
     print(f"[DONE] Saved {save_file}")
-
-    log_dir = "logs/alphaedit"
+    # ---- noise_E log path ----
+    log_dir = "logs/Alphaedit"
     match = re.search(r"step_(\d+)", args.save_path)
     step = int(match.group(1))
-
     os.makedirs(log_dir, exist_ok=True)
     txt_path = os.path.join(log_dir, "noise_e_log.txt")
     with open(txt_path, "a") as f:

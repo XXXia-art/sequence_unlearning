@@ -30,6 +30,7 @@ def edit_model(
     base_state,
     all_target,
     target_concepts,
+    hist_targets,
     anchor_concepts,
     retain_texts,
     emb_size=768,
@@ -76,7 +77,26 @@ def edit_model(
     sum_tt = torch.stack(sum_tt).mean(0)
     sum_at = torch.stack(sum_at).mean(0)
     k_e = torch.stack(ke).mean(0).T
-   
+    
+    ## hist_kp计算
+    hist_ke = []
+
+    for h in hist_targets:
+        h_in = get_token_id(h, pipeline.tokenizer, return_ids_only=False)
+        h_emb = pipeline.text_encoder(h_in.input_ids.to(device)).last_hidden_state[0]
+        idx_h = h_in.attention_mask[0].sum().item() - 2
+        h_vec = h_emb[[idx_h]]      # [1, d]
+        hist_ke.append(h_vec)
+
+    if len(hist_ke) > 0:
+        K_hist = torch.cat([x.T for x in hist_ke], dim=1)   # [d, n_hist]
+        sum_hh = (K_hist @ K_hist.T) / K_hist.shape[1]
+    else:
+        K_hist = None
+        sum_hh = torch.zeros_like(I)
+    ## end hist_kp计算
+        
+
     ## Retain
     retain_texts = [x for x in retain_texts if not any(c.lower() in x.lower() for c in all_target)]
     last_ret_embs = []
@@ -89,7 +109,7 @@ def edit_model(
 
     last_ret_embs = torch.cat(last_ret_embs, dim=0)
     last_ret_embs = last_ret_embs[torch.randperm(last_ret_embs.size(0))] ## shuffle
-
+    ## end Retain
 
     ## 记录指标
     global_hist_norm_sq = 0.0
@@ -103,9 +123,7 @@ def edit_model(
         W_orig = base_state[name].to(device)
         delta_history = W - W_orig
 
-        erase = W @ (sum_at - sum_tt) @ (I + sum_tt).inverse()
-        U0, S0, V0 = torch.svd(W)
-        P0 = V0[:, -1:] @ V0[:, -1:].T
+
         layer_ret_embs = last_ret_embs  # 使用所有保留样本，不做IPF筛选
         sum_rr, n = [], 0
         for i in range(0, len(layer_ret_embs), chunk_size):
@@ -120,7 +138,7 @@ def edit_model(
             continue
 
         P = U[:, mask] @ U[:, mask].T
-        M = (sum_tt @ P + args.retain_scale * I).inverse()
+        M = (sum_tt @ P + args.hist_scale * sum_hh @ P + args.retain_scale * I).inverse()
 
         delta = (
             W @ (sum_at - sum_tt) @ P
@@ -156,6 +174,7 @@ if __name__ == "__main__":
     parser.add_argument("--aug_num", type=int, default=10)
     parser.add_argument("--threshold", type=float, default=1e-4)
     parser.add_argument("--retain_scale", type=float, default=0.05)
+    parser.add_argument("--hist_scale", type=float, default=1.0)
     parser.add_argument("--lamb", type=float, default=0.0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dtype", type=str, default="float32")
@@ -187,6 +206,8 @@ if __name__ == "__main__":
     # ---- Parse inputs ----
     all_targets = [x.strip() for x in args.target_concepts.split(",")]
     current_target = all_targets[-5:]
+    hist_targets = all_targets[:-len(current_target)]
+
     anchors = [x.strip() for x in args.anchor_concepts.split(",")]
     if len(anchors) == 1:
         anchors = anchors * len(current_target)
@@ -199,7 +220,7 @@ if __name__ == "__main__":
     torch.cuda.empty_cache()
     # ---- Edit ----
     edit_dict, noise_e = edit_model(
-        args, pipe, basestate, all_targets, current_target, anchors, retain_texts, device=device
+        args, pipe, basestate, all_targets, current_target, hist_targets, anchors, retain_texts, device=device
     )
 
     os.makedirs(args.save_path, exist_ok=True)

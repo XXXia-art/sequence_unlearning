@@ -6,10 +6,10 @@ erase_type="instance"
 # ============================
 # 🔥 在这里自定义你要采样的 step
 # ============================
-STEPS=(40 70)
+STEPS=(00 10 20 30 50 60 70 80 90)
 
 
-EVAL_GPUS=(0 2)
+EVAL_GPUS=(0 1 2)
 NUM_EVAL_GPUS=${#EVAL_GPUS[@]}
 EVAL_BATCH_SIZE=40
 

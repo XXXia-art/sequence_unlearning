@@ -85,7 +85,7 @@ def edit_model(
 
         t_vec = t_emb[[idx_t]]
         a_vec = a_emb[[idx_a]]
-
+        ## mean ?
         sum_tt.append(t_vec.T @ t_vec)
         sum_at.append(a_vec.T @ t_vec)
         ke.append(t_vec)
@@ -95,23 +95,21 @@ def edit_model(
     k_e = torch.cat([x.T for x in ke], dim=1)   # [d, n_target]
 
     ## Retain
-    retain_texts = [x for x in retain_texts if not any(c.lower() in x.lower() for c in all_target)]
     last_ret_embs = []
-
+    retain_texts = [x for x in retain_texts if not any(c.lower() in x.lower() for c in all_target)]
     for i in range(0, len(retain_texts), chunk_size):
         r_in = get_token_id(retain_texts[i:i + chunk_size], pipeline.tokenizer, return_ids_only=False)
         r_emb = pipeline.text_encoder(r_in.input_ids.to(device)).last_hidden_state
         idx = r_in.attention_mask.sum(1) - 2
         last_ret_embs.append( r_emb[torch.arange(r_emb.size(0)), idx].unsqueeze(1))
 
-    last_ret_embs = torch.cat(last_ret_embs, dim=0)
+    last_ret_embs = torch.cat(last_ret_embs)
     last_ret_embs = last_ret_embs[torch.randperm(last_ret_embs.size(0))] ## shuffle
     ## end Retain
 
     ## 记录指标
     global_hist_norm_sq = 0.0
     global_cur_norm_sq  = 0.0
-    global_delta_hist = 0.0
 
     ## Edit each layer
     for name, W in tqdm(edit_dict.items(), desc="Editing"):
@@ -120,6 +118,7 @@ def edit_model(
         W_orig = base_state[name].to(device)
         delta_history = W - W_orig
 
+        ## W是否变化，是否需要修改
         erase = W @ (sum_at - sum_tt) @ (I + sum_tt).inverse()
         U0, S0, V0 = torch.svd(W)
         P0 = V0[:, -1:] @ V0[:, -1:].T
@@ -143,7 +142,6 @@ def edit_model(
         mask = S < args.threshold
         if mask.sum() == 0:
             continue
-
         P = U[:, mask] @ U[:, mask].T
         M = (sum_tt @ P + args.retain_scale * I).inverse()
 
@@ -159,7 +157,6 @@ def edit_model(
         edit_dict[name] = (W + delta).cpu()
 
     noise_e = abs(global_hist_norm_sq - global_cur_norm_sq)
-    remain_e = global_hist_norm_sq
     return edit_dict, noise_e
 
 
@@ -179,8 +176,8 @@ if __name__ == "__main__":
 
     parser.add_argument("--params", type=str, default="V")
     parser.add_argument("--aug_num", type=int, default=10)
-    parser.add_argument("--threshold", type=float, default=1e-4)
-    parser.add_argument("--retain_scale", type=float, default=0.05)
+    parser.add_argument("--threshold", type=float, default=1e-1)
+    parser.add_argument("--retain_scale", type=float, default=1.0)
     parser.add_argument("--lamb", type=float, default=0.0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dtype", type=str, default="float32")

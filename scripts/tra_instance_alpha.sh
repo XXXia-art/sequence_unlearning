@@ -541,7 +541,7 @@ for ((step=0; step<NUM_STEPS; step++)); do
       "${save_root}/${erase_type}/${prev_step}/weight.pt")
   fi
 
-  CUDA_VISIBLE_DEVICES=1 python Alphaedit.py \
+  CUDA_VISIBLE_DEVICES=3 python Alphaedit.py \
     --target_concepts "$targets" \
     --anchor_concepts "$anchor" \
     --retain_path "data/${erase_type}.csv" \

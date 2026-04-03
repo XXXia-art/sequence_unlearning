@@ -79,23 +79,23 @@ def edit_model(
     sum_at = torch.stack(sum_at).mean(0)
     k_e = torch.cat([x.T for x in ke], dim=1)   # [d, n_target]
 
-    ## hist_kp计算
-    hist_ke = []
+    # ## hist_kp计算
+    # hist_ke = []
 
-    for h in hist_targets:
-        h_in = get_token_id(h, pipeline.tokenizer, return_ids_only=False)
-        h_emb = pipeline.text_encoder(h_in.input_ids.to(device)).last_hidden_state[0]
-        idx_h = h_in.attention_mask[0].sum().item() - 2
-        h_vec = h_emb[[idx_h]]      # [1, d]
-        hist_ke.append(h_vec)
+    # for h in hist_targets:
+    #     h_in = get_token_id(h, pipeline.tokenizer, return_ids_only=False)
+    #     h_emb = pipeline.text_encoder(h_in.input_ids.to(device)).last_hidden_state[0]
+    #     idx_h = h_in.attention_mask[0].sum().item() - 2
+    #     h_vec = h_emb[[idx_h]]      # [1, d]
+    #     hist_ke.append(h_vec)
 
-    if len(hist_ke) > 0:
-        K_hist = torch.cat([x.T for x in hist_ke], dim=1)   # [d, n_hist]
-        sum_hh = (K_hist @ K_hist.T) / K_hist.shape[1]
-    else:
-        K_hist = None
-        sum_hh = torch.zeros_like(I)
-    ## end hist_kp计算
+    # if len(hist_ke) > 0:
+    #     K_hist = torch.cat([x.T for x in hist_ke], dim=1)   # [d, n_hist]
+    #     sum_hh = (K_hist @ K_hist.T) / K_hist.shape[1]
+    # else:
+    #     K_hist = None
+    #     sum_hh = torch.zeros_like(I)
+    # ## end hist_kp计算
 
     ## Retain
     retain_texts = [x for x in retain_texts if not any(c.lower() in x.lower() for c in all_target)]
@@ -122,6 +122,10 @@ def edit_model(
         W_orig = base_state[name].to(device)
         delta_history = W - W_orig  # 历史累计修改
 
+        resp = delta_history @ k_e          # [d, n]
+        noise = resp.norm(dim=0).pow(2).mean()
+        
+
         layer_ret_embs = last_ret_embs  # 使用所有保留样本，不做IPF筛选
         sum_rr, n = [], 0
         for i in range(0, len(layer_ret_embs), chunk_size):
@@ -136,8 +140,8 @@ def edit_model(
             continue
 
         P = U[:, mask] @ U[:, mask].T
-        M = (sum_tt @ P + args.hist_scale * sum_hh @ P + args.retain_scale * I).inverse()
-
+        # M = (sum_tt @ P + args.hist_scale * sum_hh @ P + args.retain_scale * I).inverse()
+        M = (sum_tt @ P + args.retain_scale * I).inverse()
         delta = (
             W @ (sum_at - sum_tt) @ P
             @ (I - M @ K2 @ (K2.T @ P @ M @ K2 + args.lamb * I2).inverse() @ K2.T @ P)
@@ -169,8 +173,8 @@ if __name__ == "__main__":
 
     parser.add_argument("--params", type=str, default="V")
     parser.add_argument("--aug_num", type=int, default=10)
-    parser.add_argument("--threshold", type=float, default=1e-4)
-    parser.add_argument("--retain_scale", type=float, default=0.05)
+    parser.add_argument("--threshold", type=float, default=1e-1)
+    parser.add_argument("--retain_scale", type=float, default=1.0)
     parser.add_argument("--hist_scale", type=float, default=1.0)
     parser.add_argument("--lamb", type=float, default=0.0)
     parser.add_argument("--seed", type=int, default=0)

@@ -500,9 +500,12 @@ instances=(
 "Vladimir Harkonnen"
 "Trini Kwan"
 )
+
+# baseline="SPEED"
 params="V"
 aug_num=10
-save_root="logs/Speed"
+threshold="1e-1"
+save_root="logs/Alpha_delta"
 erase_type="instance"
 anchor=" "
 
@@ -530,15 +533,15 @@ for ((step=0; step<NUM_STEPS; step++)); do
   echo "        new_targets   = ${group[@]: -5}"
   # echo "        targets       = ${targets}"
 
-  ## baseline
+
   EXTRA_ARGS=()
   if [ "$step" -gt 0 ]; then
     prev_step=$(printf "step_%03d" "$((step - 1))")
     EXTRA_ARGS+=(--edit_ckpt \
-      "${save_root}/${erase_type}/${prev_step}/weight.pt")
+      "${save_root}/${erase_type}/${prev_step}")
   fi
 
-  CUDA_VISIBLE_DEVICES=0 python speed.py \
+  CUDA_VISIBLE_DEVICES=3 python Alpha_delta.py \
     --target_concepts "$targets" \
     --anchor_concepts "$anchor" \
     --retain_path "data/${erase_type}.csv" \
@@ -546,6 +549,7 @@ for ((step=0; step<NUM_STEPS; step++)); do
     --save_path "${save_root}/${erase_type}/${step_name}" \
     --params "$params" \
     --aug_num "$aug_num" \
+    --threshold "$threshold" \
     "${EXTRA_ARGS[@]}"
 
 done

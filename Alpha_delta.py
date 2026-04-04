@@ -59,7 +59,7 @@ def edit_model(
     I2 = torch.eye(K2.shape[1], device=device)
 
     ## Target / Anchor
-    sum_tt, sum_at, ke = [], [], []
+    sum_tt, sum_at, ke, hist_ke = [], [], [], []
 
     for t, a in zip(target_concepts, anchor_concepts):
         t_in = get_token_id(t, pipeline.tokenizer, return_ids_only=False)
@@ -76,28 +76,23 @@ def edit_model(
 
         sum_tt.append(t_vec.T @ t_vec)
         sum_at.append(a_vec.T @ t_vec)
-        ke.append(t_vec)
+        ke.append(t_vec.T)
     sum_tt = torch.stack(sum_tt).mean(0)
     sum_at = torch.stack(sum_at).mean(0)
-    k_e = torch.cat([x.T for x in ke], dim=1)   # [d, n_target]
+    k_e = torch.cat([x for x in ke], dim=1)   # [d, n_target]
 
-    # ## hist_kp计算
-    # hist_ke = []
+    ## hist_kp计算
+    for h in hist_targets:
+        h_in = get_token_id(h, pipeline.tokenizer, return_ids_only=False)
+        h_emb = pipeline.text_encoder(h_in.input_ids.to(device)).last_hidden_state[0]
+        idx_h = h_in.attention_mask[0].sum().item() - 2
+        h_vec = h_emb[[idx_h]]   
+        hist_ke.append(h_vec.T @ h_vec)  
 
-    # for h in hist_targets:
-    #     h_in = get_token_id(h, pipeline.tokenizer, return_ids_only=False)
-    #     h_emb = pipeline.text_encoder(h_in.input_ids.to(device)).last_hidden_state[0]
-    #     idx_h = h_in.attention_mask[0].sum().item() - 2
-    #     h_vec = h_emb[[idx_h]]      # [1, d]
-    #     hist_ke.append(h_vec)
-
-    # if len(hist_ke) > 0:
-    #     K_hist = torch.cat([x.T for x in hist_ke], dim=1)   # [d, n_hist]
-    #     sum_hh = (K_hist @ K_hist.T) / K_hist.shape[1]
-    # else:
-    #     K_hist = None
-    #     sum_hh = torch.zeros_like(I)
-    # ## end hist_kp计算
+    if len(hist_ke) > 0:
+        sum_hh = torch.stack(hist_ke).mean(0)
+    else:
+        sum_hh = torch.zeros_like(I)
 
     ## Retain
     retain_texts = [x for x in retain_texts if not any(c.lower() in x.lower() for c in all_target)]
@@ -111,7 +106,6 @@ def edit_model(
 
     last_ret_embs = torch.cat(last_ret_embs, dim=0)
     last_ret_embs = last_ret_embs[torch.randperm(last_ret_embs.size(0))] ## shuffle
-    ## end Retain
 
     ## 记录指标
     delta_coef = args.delta_coef
@@ -128,11 +122,11 @@ def edit_model(
         ## deltaedit阈值确定以及历史空间投影P_hist的计算
         W = W.to(device)
         W_orig = base_state[name].to(device)
-        delta_history = W - W_orig  # 历史累计修改
+        delta_history = W - W_orig # 历史更新在“当前目标相关输入子空间”里实际激活了哪些输出方向。
 
         resp = delta_history @ k_e          # [d, n]
         noise = resp.norm(dim=0).pow(2).mean()
-        cache = torch.cat([resp, delta_history], dim=1)   # [d, n_target + m]
+        cache = torch.cat([resp, delta_history], dim=1)   # 历史更新在“当前目标相关输入子空间”里实际激活了哪些输出方向。
 
         if name not in m_hist:
             m_hist[name] = noise
@@ -147,7 +141,7 @@ def edit_model(
         trigger_deltaedit = (step >= 5) and std!=0 and abs(noise - m_prev)> eta * std
 
         if trigger_deltaedit:
-            print(f"[Deltaedit] step={step} is being edited.")
+            print(f"[Deltaedit] ---------------")
             D_hist = cache @ cache.T
             U_hist, S_hist, _ = torch.linalg.svd(D_hist, full_matrices=False)
             idx = torch.where(S_hist > 0.1)[0]
@@ -179,47 +173,15 @@ def edit_model(
         if mask.sum() == 0:
             continue
 
-        # ## 进行了一行修改
-        # P = U[:, mask] @ U[:, mask].T
-        # M = (sum_tt @ P + args.retain_scale * I).inverse()
-        
-        # delta = (
-        #     W @ (sum_at - sum_tt) @ P
-        #     @ (I - M @ K2 @ (K2.T @ P @ M @ K2 + args.lamb * I2).inverse() @ K2.T @ P)
-        #     @ M
-        # )
-        # # delta = P_hist @ delta  ## 把历史空间投影掉
-        
-        
-        
-        # ======== [MODIFIED START] 按新的 U 闭式解做分块求解 ========
         P = U[:, mask] @ U[:, mask].T
-        B = W @ (sum_at - sum_tt) @ P
+        M = (sum_tt @ P + sum_hh @ P + args.retain_scale * I).inverse()
 
-        # -------- 1) 非历史方向部分：对应 P_hist U ，ridge 系数为 retain_scale --------
-        M_free = torch.inverse(sum_tt @ P + args.retain_scale * I)
-        Q_free = I - M_free @ K2 @ torch.inverse( K2.T @ P @ M_free @ K2 + args.lamb * I2 ) @ K2.T @ P
-        delta_free = B @ Q_free @ M_free
-
-        # -------- 2) 历史方向部分：对应 (I - P_hist)U ，ridge 系数为 retain_scale + hist_scale --------
-        hist_ridge = args.retain_scale + args.hist_scale
-        M_hist = torch.inverse(sum_tt @ P + hist_ridge * I)
-        Q_hist = I - M_hist @ K2 @ torch.inverse( K2.T @ P @ M_hist @ K2 + args.lamb * I2 ) @ K2.T @ P
-        delta_hist = B @ Q_hist @ M_hist
-
-        I_row = torch.eye(W.shape[0], device=device, dtype=W.dtype)
-
-        # -------- 3) 按闭式解组合 --------
-        # U* = P_hist B P Q_1 M_1 + (I - P_hist) B P Q_{1+lambda} M_{1+lambda}
-        delta = P_hist @ delta_free + (I_row  - P_hist) @ delta_hist
-        # ======== [MODIFIED END] ========
-
-        # ======== [MODIFIED START] debug查看两部分更新强度 ========
-        free_norm = torch.norm(P_hist @ delta_free).item()
-        hist_norm = torch.norm((I_row - P_hist) @ delta_hist).item()
-        print(f"[SplitDelta] {name} | free_norm={free_norm:.6f}, hist_norm={hist_norm:.6f}")
-        # ======== [MODIFIED END] ========
-
+        delta = (
+            W @ (sum_at - sum_tt) @ P
+            @ (I - M @ K2 @ (K2.T @ P @ M @ K2 + args.lamb * I2).inverse() @ K2.T @ P)
+            @ M
+        )
+        delta = P_hist @ delta  ## 把历史空间投影掉
         delta_total = delta_history + delta
         global_hist_norm_sq += torch.norm(delta_total @ k_e) ** 2
         global_cur_norm_sq += torch.norm(delta @ k_e) ** 2
@@ -247,12 +209,11 @@ if __name__ == "__main__":
     parser.add_argument("--aug_num", type=int, default=10)
     parser.add_argument("--threshold", type=float, default=1e-1)
     parser.add_argument("--retain_scale", type=float, default=1.0)
-    parser.add_argument("--hist_scale", type=float, default=1.0)
     parser.add_argument("--lamb", type=float, default=0.0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dtype", type=str, default="float32")
     parser.add_argument("--delta_coef", type=float, default=0.9)
-    parser.add_argument("--eta", type=float, default=1.0)
+    parser.add_argument("--eta", type=float, default=1)
 
     args = parser.parse_args()
 
@@ -333,7 +294,7 @@ if __name__ == "__main__":
     torch.save(v_hist, v_path)
 
     # ---- noise_E log path ----
-    log_dir = "logs/Alpha_delta"
+    log_dir = os.path.dirname(os.path.dirname(args.save_path))
     match = re.search(r"step_(\d+)", args.save_path)
     step = int(match.group(1))
     os.makedirs(log_dir, exist_ok=True)

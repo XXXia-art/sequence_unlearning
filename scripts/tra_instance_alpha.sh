@@ -501,6 +501,26 @@ instances=(
 "Trini Kwan"
 )
 
+root_path="${save_root}/${erase_type}"
+mkdir -p "$root_path"
+config_file="${root_path}/config.txt"
+
+if [ ! -f "$config_file" ]; then
+  touch "$config_file"
+fi
+
+{
+  echo "=============================="
+  echo "alpha_delta,加入了sum_hh"
+  echo "run_time: $(date '+%Y-%m-%d %H:%M:%S')"
+  echo "erase_type: $erase_type"
+  echo "params: $params"
+  echo "aug_num: $aug_num"
+  echo "threshold: $threshold"
+  echo "=============================="
+} >> "$config_file"
+
+
 # baseline="SPEED"
 params="V"
 aug_num=10

@@ -501,10 +501,30 @@ instances=(
 "Trini Kwan"
 )
 
-# baseline="SPEED"
+root_path="${save_root}/${erase_type}"
+mkdir -p "$root_path"
+config_file="${root_path}/config.txt"
+
+if [ ! -f "$config_file" ]; then
+  touch "$config_file"
+fi
+
+{
+  echo "=============================="
+  echo "alpha_delta,加入了sum_hh"
+  echo "run_time: $(date '+%Y-%m-%d %H:%M:%S')"
+  echo "erase_type: $erase_type"
+  echo "params: $params"
+  echo "aug_num: $aug_num"
+  echo "threshold: $threshold"
+  echo "=============================="
+} >> "$config_file"
+
+
 params="V"
 aug_num=10
 threshold="1e-1"
+eta="1"
 save_root="logs/Alpha_delta"
 erase_type="instance"
 anchor=" "
@@ -550,6 +570,7 @@ for ((step=0; step<NUM_STEPS; step++)); do
     --params "$params" \
     --aug_num "$aug_num" \
     --threshold "$threshold" \
+    --eta "$eta" \
     "${EXTRA_ARGS[@]}"
 
 done

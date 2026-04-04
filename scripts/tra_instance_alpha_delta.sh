@@ -502,7 +502,7 @@ instances=(
 )
 
 
-save_root="logs/Alpha_delta"
+save_root="logs/Alpha_delta_ke"
 params="V"
 aug_num=10
 threshold="1e-1"
@@ -522,7 +522,7 @@ fi
 
 {
   echo "=============================="
-  echo "alpha_delta,加入了sum_hh"
+  echo "alpha_delta,加入了sum_hh,平均了ke"
   echo "run_time: $(date '+%Y-%m-%d %H:%M:%S')"
   echo "erase_type: $erase_type"
   echo "params: $params"

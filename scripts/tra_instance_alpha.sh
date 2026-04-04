@@ -503,7 +503,7 @@ instances=(
 
 
 
-save_root="logs/Alphaedit_sumhh"
+save_root="logs/Alphaedit_sumhh_ke"
 params="V"
 aug_num=10
 threshold="1e-1"
@@ -521,7 +521,7 @@ fi
 
 {
   echo "=============================="
-  echo "alphaedit,加入了sum_hh"
+  echo "alphaedit,加入了sum_hh，平均了ke"
   echo "run_time: $(date '+%Y-%m-%d %H:%M:%S')"
   echo "erase_type: $erase_type"
   echo "params: $params"
@@ -562,7 +562,7 @@ for ((step=0; step<NUM_STEPS; step++)); do
       "${save_root}/${erase_type}/${prev_step}/weight.pt")
   fi
 
-  CUDA_VISIBLE_DEVICES=3 python Alphaedit.py \
+  CUDA_VISIBLE_DEVICES=1 python Alphaedit.py \
     --target_concepts "$targets" \
     --anchor_concepts "$anchor" \
     --retain_path "data/${erase_type}.csv" \

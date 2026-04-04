@@ -77,7 +77,8 @@ def edit_model(
         ke.append(t_vec.T)
     sum_tt = torch.stack(sum_tt).mean(0)
     sum_at = torch.stack(sum_at).mean(0)
-    k_e = torch.cat([x for x in ke], dim=1)   # [d, n_target]
+    # k_e = torch.cat([x for x in ke], dim=1)   # [d, n_target]
+    k_e = torch.stack(ke).mean(0) 
 
     ## hist_kp计算
     for h in hist_targets:
@@ -106,6 +107,13 @@ def edit_model(
     last_ret_embs = last_ret_embs[torch.randperm(last_ret_embs.size(0))] ## shuffle
 
     ## 记录指标
+    match = re.search(r"step_(\d+)", args.save_path)
+    step = int(match.group(1))
+    config_path = os.path.join(os.path.dirname(os.path.dirname(args.save_path)), "config.txt")
+    with open(config_path, "a") as f:
+                f.write(
+                    f"[step {step:03d}] >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> \n" )
+
     global_hist_norm_sq = 0.0
     global_cur_norm_sq  = 0.0
 
@@ -116,9 +124,15 @@ def edit_model(
         W_orig = base_state[name].to(device)
         delta_history = W - W_orig  # 历史累计修改
 
-        resp = delta_history @ k_e          # [d, n]
-        noise = resp.norm(dim=0).pow(2).mean()
-        
+        resp = delta_history @ k_e          
+        noise = resp.norm(dim=0).pow(2)
+        with open(config_path, "a") as f:
+            f.write(
+                f"layer={name}| \n"
+                f"noise={float(noise):.8f} | "
+            )
+        with open(config_path, "a") as f:
+                f.write(f"\n")
 
         layer_ret_embs = last_ret_embs  # 使用所有保留样本，不做IPF筛选
         sum_rr, n = [], 0

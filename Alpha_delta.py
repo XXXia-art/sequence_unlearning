@@ -79,7 +79,8 @@ def edit_model(
         ke.append(t_vec.T)
     sum_tt = torch.stack(sum_tt).mean(0)
     sum_at = torch.stack(sum_at).mean(0)
-    k_e = torch.cat([x for x in ke], dim=1)   # [d, n_target]
+    # k_e = torch.cat([x for x in ke], dim=1)   # [d, n_target]
+    k_e = torch.stack(ke).mean(0) 
 
     ## hist_kp计算
     for h in hist_targets:
@@ -112,6 +113,10 @@ def edit_model(
     eta = args.eta
     match = re.search(r"step_(\d+)", args.save_path)
     step = int(match.group(1))
+    config_path = os.path.join(os.path.dirname(os.path.dirname(args.save_path)), "config.txt")
+    with open(config_path, "a") as f:
+                f.write(
+                    f"[step {step:03d}] >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> \n" )
 
     global_hist_norm_sq = 0.0
     global_cur_norm_sq  = 0.0
@@ -124,8 +129,8 @@ def edit_model(
         W_orig = base_state[name].to(device)
         delta_history = W - W_orig # 历史更新在“当前目标相关输入子空间”里实际激活了哪些输出方向。
 
-        resp = delta_history @ k_e          # [d, n]
-        noise = resp.norm(dim=0).pow(2).mean()
+        resp = delta_history @ k_e          
+        noise = resp.norm(dim=0).pow(2)
         cache = torch.cat([resp, delta_history], dim=1)   # 历史更新在“当前目标相关输入子空间”里实际激活了哪些输出方向。
 
         if name not in m_hist:
@@ -139,9 +144,18 @@ def edit_model(
         # 再判断是否触发 DeltaEdit
         std = v_prev ** 0.5
         trigger_deltaedit = (step >= 5) and std!=0 and abs(noise - m_prev)> eta * std
-
+        with open(config_path, "a") as f:
+                f.write(
+                    f"layer={name}| \n"
+                    f"noise={float(noise):.8f} | "
+                    f"m_prev={float(m_prev):.8f} | "
+                    f"std={float(std):.8f} | \n "
+                )
         if trigger_deltaedit:
             print(f"[Deltaedit] ---------------")
+            with open(config_path, "a") as f:
+                f.write(f"    >>> DeltaEdit TRIGGERED at step {step:03d}, layer={name}\n")
+
             D_hist = cache @ cache.T
             U_hist, S_hist, _ = torch.linalg.svd(D_hist, full_matrices=False)
             idx = torch.where(S_hist > 0.1)[0]
@@ -159,6 +173,8 @@ def edit_model(
             m_hist[name] = delta_coef * m_prev + (1 - delta_coef) * noise
             v_hist[name] = delta_coef * v_prev + (1 - delta_coef) * ((noise - m_hist[name]) ** 2)
 
+        with open(config_path, "a") as f:
+                f.write(f"\n")
 
         layer_ret_embs = last_ret_embs  # 使用所有保留样本，不做IPF筛选
         sum_rr, n = [], 0
@@ -175,7 +191,6 @@ def edit_model(
 
         P = U[:, mask] @ U[:, mask].T
         M = (sum_tt @ P + sum_hh @ P + args.retain_scale * I).inverse()
-
         delta = (
             W @ (sum_at - sum_tt) @ P
             @ (I - M @ K2 @ (K2.T @ P @ M @ K2 + args.lamb * I2).inverse() @ K2.T @ P)

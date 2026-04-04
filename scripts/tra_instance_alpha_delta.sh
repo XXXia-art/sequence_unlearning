@@ -501,7 +501,18 @@ instances=(
 "Trini Kwan"
 )
 
-root_path="${save_root}/${erase_type}"
+
+save_root="logs/Alpha_delta"
+params="V"
+aug_num=10
+threshold="1e-1"
+delta_coef="0.9"
+eta="3"
+erase_type="instance"
+anchor=" "
+
+
+root_path="${save_root}"
 mkdir -p "$root_path"
 config_file="${root_path}/config.txt"
 
@@ -517,17 +528,12 @@ fi
   echo "params: $params"
   echo "aug_num: $aug_num"
   echo "threshold: $threshold"
+  echo "delta_coef: $delta_coef"
+  echo "eta: $eta"
   echo "=============================="
 } >> "$config_file"
 
 
-params="V"
-aug_num=10
-threshold="1e-1"
-eta="1"
-save_root="logs/Alpha_delta"
-erase_type="instance"
-anchor=" "
 
 
 GROUP_SIZE=5
@@ -570,6 +576,7 @@ for ((step=0; step<NUM_STEPS; step++)); do
     --params "$params" \
     --aug_num "$aug_num" \
     --threshold "$threshold" \
+    --delta_coef "$delta_coef" \
     --eta "$eta" \
     "${EXTRA_ARGS[@]}"
 

@@ -143,7 +143,7 @@ def edit_model(
 
         # 再判断是否触发 DeltaEdit
         std = v_prev ** 0.5
-        trigger_deltaedit = (step >= 5) and std!=0 and abs(noise - m_prev)> eta * std
+        trigger_deltaedit = (step >= 5) and std!=0 and (noise > m_prev + eta * std)
         with open(config_path, "a") as f:
             f.write(
                 f"layer={name}| \n"
@@ -170,13 +170,10 @@ def edit_model(
                 P_hist = torch.eye(W.shape[0], device=device, dtype=W.dtype)
         else:
             P_hist = torch.eye(W.shape[0], device=device, dtype=W.dtype)
-            m_hist[name] = delta_coef * m_prev + (1 - delta_coef) * noise
-            v_hist[name] = delta_coef * v_prev + (1 - delta_coef) * ((noise - m_hist[name]) ** 2)
 
-        # if step >= 5: ## 
-        #     m_hist[name] = delta_coef * m_prev + (1 - delta_coef) * noise
-        #     v_hist[name] = delta_coef * v_prev + (1 - delta_coef) * ((noise - m_hist[name]) ** 2)
-
+        m_hist[name] = delta_coef * m_prev + (1 - delta_coef) * noise 
+        v_hist[name] = delta_coef * v_prev + (1 - delta_coef) * ((noise - m_hist[name]) ** 2)
+        
         with open(config_path, "a") as f:
                 f.write(f"\n")
 

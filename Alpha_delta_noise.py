@@ -22,7 +22,20 @@ def get_token_id(prompt, tokenizer, return_ids_only=True):
     )
     return tokens.input_ids if return_ids_only else tokens
 
-## AlphaEdit + deltaedit
+def generate_perturbed_target(target_embs, P, erase_weight, num_per_sample, target_noise_scale, mini_batch=5):
+    target_embs = target_embs.squeeze(1)
+    out_embs, norm_list = [], []
+    for i in range(0, target_embs.size(0), mini_batch):
+        mini_tar_embs = target_embs[i:i + mini_batch]
+        for _ in range(num_per_sample):
+            noise = torch.randn_like(mini_tar_embs) * target_noise_scale
+            perturbed_embs = mini_tar_embs + noise @ P
+            out_embs.append(perturbed_embs)
+            norm_list.append(torch.matmul(perturbed_embs, erase_weight.T).norm(dim=1))
+    out_embs = torch.cat(out_embs, dim=0)
+    norm_list = torch.cat(norm_list, dim=0) 
+    return out_embs[norm_list < norm_list.mean()].unsqueeze(1) # shape: [Num, 1, 768] ## TODO 这个逻辑可能要进行修改
+## AlphaEdit + deltaedit + target_noise
 @torch.no_grad()
 def edit_model(
     args,
@@ -59,7 +72,7 @@ def edit_model(
     I2 = torch.eye(K2.shape[1], device=device)
 
     ## Target / Anchor
-    sum_tt, sum_at, ke, hist_ke = [], [], [], []
+    sum_tt, sum_at, ke, hist_ke, target_pairs = [], [], [], [], []
 
     for t, a in zip(target_concepts, anchor_concepts):
         t_in = get_token_id(t, pipeline.tokenizer, return_ids_only=False)
@@ -77,6 +90,7 @@ def edit_model(
         sum_tt.append(t_vec.T @ t_vec)
         sum_at.append(a_vec.T @ t_vec)
         ke.append(t_vec.T)
+        target_pairs.append((t_vec, a_vec))
     sum_tt = torch.stack(sum_tt).mean(0)
     sum_at = torch.stack(sum_at).mean(0)
     # k_e = torch.cat([x for x in ke], dim=1)   # [d, n_target]
@@ -173,13 +187,12 @@ def edit_model(
             m_hist[name] = delta_coef * m_prev + (1 - delta_coef) * noise
             v_hist[name] = delta_coef * v_prev + (1 - delta_coef) * ((noise - m_hist[name]) ** 2)
 
-        # if step >= 5: ## 
-        #     m_hist[name] = delta_coef * m_prev + (1 - delta_coef) * noise
-        #     v_hist[name] = delta_coef * v_prev + (1 - delta_coef) * ((noise - m_hist[name]) ** 2)
-
         with open(config_path, "a") as f:
                 f.write(f"\n")
 
+        erase = W @ (sum_at - sum_tt) @ (I + sum_tt).inverse()
+        U0, S0, V0 = torch.svd(W)
+        P0 = V0[:, -1:] @ V0[:, -1:].T
         layer_ret_embs = last_ret_embs  # 使用所有保留样本，不做IPF筛选
         sum_rr, n = [], 0
         for i in range(0, len(layer_ret_embs), chunk_size):
@@ -188,15 +201,33 @@ def edit_model(
             sum_rr.append((chunk.transpose(1, 2) @ chunk).sum(0))
         sum_rr = torch.stack(sum_rr).sum(0) / max(1, n)
 
+        ## 加入 Target Noise 后的统计量计算
+        layer_sum_tt_list = []
+        layer_sum_at_list = []
+
+        for t_vec, a_vec in target_pairs:   
+            t_bank = t_vec.unsqueeze(0)   # [1, 1, 768]
+            if args.target_aug_num > 0:
+                t_aug = generate_perturbed_target(t_bank, P0, erase, args.target_aug_num, args.target_noise_scale)
+                if t_aug.size(0) > 0:
+                    t_bank = torch.cat([t_bank, t_aug], dim=0)   # [M, 1, 768]
+            a_bank = a_vec.unsqueeze(0).expand(t_bank.size(0), -1, -1)  # [M, 1, 768]
+            ## 先target 内部平均
+            layer_sum_tt_list.append((t_bank.transpose(1, 2) @ t_bank).mean(0))
+            layer_sum_at_list.append((a_bank.transpose(1, 2) @ t_bank).mean(0))
+
+        layer_sum_tt = torch.stack(layer_sum_tt_list).mean(0)
+        layer_sum_at = torch.stack(layer_sum_at_list).mean(0)
+
         U, S, _ = torch.svd(sum_rr)
         mask = S < args.threshold
         if mask.sum() == 0:
             continue
 
         P = U[:, mask] @ U[:, mask].T
-        M = (sum_tt @ P + sum_hh @ P + args.retain_scale * I).inverse()
+        M = (layer_sum_tt @ P + sum_hh @ P + args.retain_scale * I).inverse()
         delta = (
-            W @ (sum_at - sum_tt) @ P
+            W @ (layer_sum_at - layer_sum_tt) @ P
             @ (I - M @ K2 @ (K2.T @ P @ M @ K2 + args.lamb * I2).inverse() @ K2.T @ P)
             @ M
         )
@@ -233,6 +264,9 @@ if __name__ == "__main__":
     parser.add_argument("--dtype", type=str, default="float32")
     parser.add_argument("--delta_coef", type=float, default=0.9)
     parser.add_argument("--eta", type=float, default=1)
+    parser.add_argument("--target_aug_num", type=int, default=0)
+    parser.add_argument("--target_noise_scale", type=float, default=0.3)
+
 
     args = parser.parse_args()
 

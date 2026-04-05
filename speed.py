@@ -88,26 +88,33 @@ def edit_model(
         ## mean ?
         sum_tt.append(t_vec.T @ t_vec)
         sum_at.append(a_vec.T @ t_vec)
-        ke.append(t_vec)
+        ke.append(t_vec.T)
     sum_tt = torch.stack(sum_tt).mean(0)
     sum_at = torch.stack(sum_at).mean(0)
-    # k_e = torch.stack(ke).mean(0).T
-    k_e = torch.cat([x.T for x in ke], dim=1)   # [d, n_target]
+    k_e = torch.stack(ke).mean(0)
 
     ## Retain
-    last_ret_embs = []
+
     retain_texts = [x for x in retain_texts if not any(c.lower() in x.lower() for c in all_target)]
+    last_ret_embs = []
+
     for i in range(0, len(retain_texts), chunk_size):
         r_in = get_token_id(retain_texts[i:i + chunk_size], pipeline.tokenizer, return_ids_only=False)
         r_emb = pipeline.text_encoder(r_in.input_ids.to(device)).last_hidden_state
         idx = r_in.attention_mask.sum(1) - 2
         last_ret_embs.append( r_emb[torch.arange(r_emb.size(0)), idx].unsqueeze(1))
 
-    last_ret_embs = torch.cat(last_ret_embs)
+    last_ret_embs = torch.cat(last_ret_embs, dim=0)
     last_ret_embs = last_ret_embs[torch.randperm(last_ret_embs.size(0))] ## shuffle
-    ## end Retain
 
     ## 记录指标
+    match = re.search(r"step_(\d+)", args.save_path)
+    step = int(match.group(1))
+    config_path = os.path.join(os.path.dirname(os.path.dirname(args.save_path)), "config.txt")
+    with open(config_path, "a") as f:
+                f.write(
+                    f"[step {step:03d}] >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> \n" )
+
     global_hist_norm_sq = 0.0
     global_cur_norm_sq  = 0.0
 
@@ -117,6 +124,15 @@ def edit_model(
         W = W.to(device)
         W_orig = base_state[name].to(device)
         delta_history = W - W_orig
+        resp = delta_history @ k_e          
+        noise = resp.norm(dim=0).pow(2)
+        with open(config_path, "a") as f:
+            f.write(
+                f"layer={name}| \n"
+                f"noise={float(noise):.8f} | "
+            )
+        with open(config_path, "a") as f:
+                f.write(f"\n")
 
         ## W是否变化，是否需要修改
         erase = W @ (sum_at - sum_tt) @ (I + sum_tt).inverse()
@@ -144,7 +160,6 @@ def edit_model(
             continue
         P = U[:, mask] @ U[:, mask].T
         M = (sum_tt @ P + args.retain_scale * I).inverse()
-
         delta = (
             W @ (sum_at - sum_tt) @ P
             @ (I - M @ K2 @ (K2.T @ P @ M @ K2 + args.lamb * I2).inverse() @ K2.T @ P)
@@ -229,7 +244,7 @@ if __name__ == "__main__":
     torch.save(edit_dict, save_file)
     print(f"[DONE] Saved {save_file}")
     # ---- noise_E log path ----
-    log_dir = "logs/Speed"
+    log_dir = os.path.dirname(os.path.dirname(args.save_path))
     match = re.search(r"step_(\d+)", args.save_path)
     step = int(match.group(1))
     os.makedirs(log_dir, exist_ok=True)

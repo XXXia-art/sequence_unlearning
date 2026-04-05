@@ -78,7 +78,7 @@ def edit_model(
     sum_tt = torch.stack(sum_tt).mean(0)
     sum_at = torch.stack(sum_at).mean(0)
     # k_e = torch.cat([x for x in ke], dim=1)   # [d, n_target]
-    k_e = torch.stack(ke).mean(0) 
+    k_e = torch.stack(ke).mean(0)
 
     ## hist_kp计算
     for h in hist_targets:

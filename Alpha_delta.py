@@ -80,7 +80,7 @@ def edit_model(
     sum_tt = torch.stack(sum_tt).mean(0)
     sum_at = torch.stack(sum_at).mean(0)
     # k_e = torch.cat([x for x in ke], dim=1)   # [d, n_target]
-    k_e = torch.stack(ke).mean(0) 
+    k_e = torch.stack(ke).mean(0)
 
     ## hist_kp计算
     for h in hist_targets:
@@ -145,12 +145,12 @@ def edit_model(
         std = v_prev ** 0.5
         trigger_deltaedit = (step >= 5) and std!=0 and abs(noise - m_prev)> eta * std
         with open(config_path, "a") as f:
-                f.write(
-                    f"layer={name}| \n"
-                    f"noise={float(noise):.8f} | "
-                    f"m_prev={float(m_prev):.8f} | "
-                    f"std={float(std):.8f} | \n "
-                )
+            f.write(
+                f"layer={name}| \n"
+                f"noise={float(noise):.8f} | "
+                f"m_prev={float(m_prev):.8f} | "
+                f"std={float(std):.8f} | \n "
+            )
         if trigger_deltaedit:
             print(f"[Deltaedit] ---------------")
             with open(config_path, "a") as f:

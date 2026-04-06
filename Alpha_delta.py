@@ -57,7 +57,6 @@ def edit_model(
     _, centers = kmeans(X=null_hidden[1:], num_clusters=3, device=device)
     K2 = torch.cat([null_hidden[[0]], centers.to(device)], dim=0).T
     I2 = torch.eye(K2.shape[1], device=device)
-
     ## Target / Anchor
     sum_tt, sum_at, ke, hist_ke = [], [], [], []
 
@@ -96,9 +95,12 @@ def edit_model(
         sum_hh = torch.zeros_like(I)
 
     ## Retain
-    retain_texts = [x for x in retain_texts if not any(c.lower() in x.lower() for c in all_target)]
-    last_ret_embs = []
-
+    exclude_concepts = all_target # + anchor_concepts 正常编辑anchor是空
+    retain_texts = [
+        x for x in retain_texts
+        if not any(c.lower() in x.lower() for c in exclude_concepts)
+    ]
+    last_ret_embs=[]
     for i in range(0, len(retain_texts), chunk_size):
         r_in = get_token_id(retain_texts[i:i + chunk_size], pipeline.tokenizer, return_ids_only=False)
         r_emb = pipeline.text_encoder(r_in.input_ids.to(device)).last_hidden_state
@@ -143,7 +145,7 @@ def edit_model(
 
         # 再判断是否触发 DeltaEdit
         std = v_prev ** 0.5
-        trigger_deltaedit = (step >= 5) and std!=0 and (noise > m_prev + eta * std)
+        trigger_deltaedit = (step >= 5) and std!=0 and noise > eta * std + m_prev
         with open(config_path, "a") as f:
             f.write(
                 f"layer={name}| \n"
@@ -171,7 +173,7 @@ def edit_model(
         else:
             P_hist = torch.eye(W.shape[0], device=device, dtype=W.dtype)
 
-        m_hist[name] = delta_coef * m_prev + (1 - delta_coef) * noise 
+        m_hist[name] = delta_coef * m_prev + (1 - delta_coef) * noise
         v_hist[name] = delta_coef * v_prev + (1 - delta_coef) * ((noise - m_hist[name]) ** 2)
         
         with open(config_path, "a") as f:
@@ -189,7 +191,6 @@ def edit_model(
         mask = S < args.threshold
         if mask.sum() == 0:
             continue
-
         P = U[:, mask] @ U[:, mask].T
         M = (sum_tt @ P + sum_hh @ P + args.retain_scale * I).inverse()
         delta = (
@@ -215,7 +216,7 @@ if __name__ == "__main__":
     parser.add_argument('--sd_ckpt', help='base version for stable diffusion', type=str, default='/home/lzh/xpz/model_weight/SD/models--CompVis--stable-diffusion-v1-4/snapshots/133a221b8aa7292a167afc5127cb63fb5005638b')
     parser.add_argument("--edit_ckpt", help="save history weight,m,v", type=str, default=None)
     parser.add_argument("--save_path", type=str, required=True)
-
+    parser.add_argument("--history_concepts", type=str, default="")
     parser.add_argument("--target_concepts", type=str, required=True)
     parser.add_argument("--anchor_concepts", type=str, required=True)
     parser.add_argument("--retain_path", type=str, default=None)
@@ -229,7 +230,7 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dtype", type=str, default="float32")
     parser.add_argument("--delta_coef", type=float, default=0.9)
-    parser.add_argument("--eta", type=float, default=1)
+    parser.add_argument("--eta", type=float, default=1.0)
 
     args = parser.parse_args()
 
@@ -280,10 +281,10 @@ if __name__ == "__main__":
 
 
     # ---- Parse inputs ----
-    all_targets = [x.strip() for x in args.target_concepts.split(",")]
-    current_target = all_targets[-5:]
-    hist_targets = all_targets[:-len(current_target)]
-
+    history_targets = [x.strip() for x in args.history_concepts.split(",") if x.strip()]
+    current_target = [x.strip() for x in args.target_concepts.split(",") if x.strip()]
+    all_targets = history_targets + current_target
+    hist_targets = history_targets
     anchors = [x.strip() for x in args.anchor_concepts.split(",")]
     if len(anchors) == 1:
         anchors = anchors * len(current_target)
@@ -300,7 +301,6 @@ if __name__ == "__main__":
     )
 
     os.makedirs(args.save_path, exist_ok=True)
-    # 保存权重
     weight_path = os.path.join(args.save_path, "weight.pt")
     torch.save(edit_dict, weight_path)
     # 保存统计量
@@ -308,7 +308,6 @@ if __name__ == "__main__":
     v_path = os.path.join(args.save_path, "v_hist.pt")
     torch.save(m_hist, m_path)
     torch.save(v_hist, v_path)
-
     # ---- noise_E log path ----
     log_dir = os.path.dirname(os.path.dirname(args.save_path))
     match = re.search(r"step_(\d+)", args.save_path)

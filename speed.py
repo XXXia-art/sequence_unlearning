@@ -85,17 +85,21 @@ def edit_model(
 
         t_vec = t_emb[[idx_t]]
         a_vec = a_emb[[idx_a]]
-        ## mean ?
+
         sum_tt.append(t_vec.T @ t_vec)
         sum_at.append(a_vec.T @ t_vec)
         ke.append(t_vec.T)
     sum_tt = torch.stack(sum_tt).mean(0)
     sum_at = torch.stack(sum_at).mean(0)
     k_e = torch.stack(ke).mean(0)
-
     ## Retain
 
-    retain_texts = [x for x in retain_texts if not any(c.lower() in x.lower() for c in all_target)]
+    ## Retain
+    exclude_concepts = all_target + anchor_concepts
+    retain_texts = [
+        x for x in retain_texts
+        if not any(c.lower() in x.lower() for c in exclude_concepts)
+    ]
     last_ret_embs = []
 
     for i in range(0, len(retain_texts), chunk_size):
@@ -141,8 +145,7 @@ def edit_model(
 
         # SPEED-IPF 筛选保留级样本
         weight_norm_init = torch.matmul(last_ret_embs.squeeze(1), erase.T).norm(dim=1)
-        layer_ret_embs = last_ret_embs[weight_norm_init > weight_norm_init.mean()] ## weight_norm_init   IPF
-        
+        layer_ret_embs = last_ret_embs[weight_norm_init > weight_norm_init.mean()] ## weight_norm_init   IPF 
         # SPEED-DFA 生成扰动样本并筛选
         sum_rr, n = [], 0
         for i in range(0, len(layer_ret_embs), chunk_size):
@@ -183,7 +186,7 @@ if __name__ == "__main__":
     parser.add_argument('--sd_ckpt', help='base version for stable diffusion', type=str, default='/home/lzh/xpz/model_weight/SD/models--CompVis--stable-diffusion-v1-4/snapshots/133a221b8aa7292a167afc5127cb63fb5005638b')
     parser.add_argument("--edit_ckpt", help="save history weight,m,v", type=str, default=None)
     parser.add_argument("--save_path", type=str, required=True)
-
+    parser.add_argument("--history_concepts", type=str, default="")
     parser.add_argument("--target_concepts", type=str, required=True)
     parser.add_argument("--anchor_concepts", type=str, required=True)
     parser.add_argument("--retain_path", type=str, default=None)
@@ -222,8 +225,10 @@ if __name__ == "__main__":
         pipe.unet.load_state_dict(prev, strict=False)
 
     # ---- Parse inputs ----
-    all_targets = [x.strip() for x in args.target_concepts.split(",")]
-    current_target = all_targets[-5:]
+    history_targets = [x.strip() for x in args.history_concepts.split(",") if x.strip()]
+    current_target = [x.strip() for x in args.target_concepts.split(",") if x.strip()]
+    all_targets = history_targets + current_target
+
     anchors = [x.strip() for x in args.anchor_concepts.split(",")]
     if len(anchors) == 1:
         anchors = anchors * len(current_target)
